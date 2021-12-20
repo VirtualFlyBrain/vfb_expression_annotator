@@ -29,12 +29,14 @@ public class VFBExpressionAnnotator {
     private Map<OWLEntity, String> curies = new HashMap<>();
     private Set<OWLClass> filterout = new HashSet<>();
     private Map<OWLEntity, Set<String>> annotations = new HashMap<>();
+	private boolean unique_annotations = false;
 
 
-    private VFBExpressionAnnotator(File ontology_file, File config_file, String annotation_iri, File outfile) throws IOException, OWLOntologyCreationException, OWLOntologyStorageException {
+    private VFBExpressionAnnotator(File ontology_file, File config_file, String annotation_iri, boolean unique_annotations, File outfile) throws IOException, OWLOntologyCreationException, OWLOntologyStorageException {
         this.ontology_file = ontology_file;
         this.outfile = outfile;
         this.ap_anno = df.getOWLAnnotationProperty(IRI.create(annotation_iri));
+        this.unique_annotations = unique_annotations;
         prepareConfig(config_file);
         run();
     }
@@ -55,7 +57,11 @@ public class VFBExpressionAnnotator {
         filterout.add(o.getOWLOntologyManager().getOWLDataFactory().getOWLThing());
         filterout.add(o.getOWLOntologyManager().getOWLDataFactory().getOWLNothing());
         filterout.addAll(r.getUnsatisfiableClasses().getEntities());
-        addDynamicNodeLabels(r);
+		if (this.unique_annotations) {
+			addUniqueNodeLabels(r);
+		} else {
+			addDynamicNodeLabels(r);
+		}
 
         log("Exporting result");
         OWLOntologyManager man2 = OWLManager.createOWLOntologyManager();
@@ -193,6 +199,17 @@ public class VFBExpressionAnnotator {
         parser.setStringToParse(manchesterSyntaxString);
         return parser.parseClassExpression();
     }
+    
+    private OWLClassExpression parseExpressionWithoutFail(String manchesterSyntaxString) {
+    	OWLClassExpression expression = null;
+        try {
+			parser.setStringToParse(manchesterSyntaxString);
+			expression = parser.parseClassExpression();
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+        return expression;
+    }
 
     private Map<String, OWLEntity> prepareEntityMap(OWLOntology o) {
         Map<String, OWLEntity> entityMap = new HashMap<>();
@@ -232,29 +249,109 @@ public class VFBExpressionAnnotator {
         instances.removeAll(filterout.stream().filter(OWLEntity::isOWLNamedIndividual).map(OWLEntity::asOWLNamedIndividual).collect(Collectors.toSet()));
         return instances;
     }
+    
+	/**
+	 * Adds node labels through considering the hierarchy between labels. Only keeps
+	 * the most specific labels. For example if node has two labels: ["cell",
+	 * "neuron"], removes cells since it is super class of neuron.
+	 * 
+	 * @param r reasoner
+	 */
+	private void addUniqueNodeLabels(OWLReasoner r) {
+		Map<String, Set<String>> labelMapping = getSublabelMapping(r);
+		Map<OWLEntity, Set<String>> labelAssignments = new HashMap<>();
+		for (String ces : classExpressionNeoLabelMap.keySet()) {
+			String label = classExpressionNeoLabelMap.get(ces);
+			try {
+				OWLClassExpression ce = parseExpression(ces);
+				if (label.isEmpty()) {
+					log("During adding of dynamic neo labels, an empty label was encountered in conjunction with a complex class expression ("
+							+ ce + "). The label was not added.");
+				}
+				if (!label.isEmpty()) {
+					for (OWLClass sc : getSubClasses(r, ce, false))
+						addLabelAssignment(labelAssignments, sc, label);
+					for (OWLNamedIndividual sc : getInstances(r, ce, false))
+						addLabelAssignment(labelAssignments, sc, label);
+				}
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+		}
+
+		for (OWLEntity entity : labelAssignments.keySet()) {
+			Set<String> labels = labelAssignments.get(entity);
+			for (String label : labels) {
+				Set<String> subLabels = labelMapping.get(label);
+				if (subLabels.isEmpty() || Collections.disjoint(labels, subLabels)) {
+					addAnnotation(entity, label);
+				}
+			}
+		}
+	}
+    
+    private void addLabelAssignment(Map<OWLEntity, Set<String>> labelAssignments, OWLEntity entity, String label) {
+    	if(labelAssignments.containsKey(entity)) {
+    		labelAssignments.get(entity).add(label);
+    	} else {
+    		Set<String> set = new HashSet<>();
+    		set.add(label);
+    		labelAssignments.put(entity, set);
+    	}
+    }
+    
+	/**
+	 * Builds a label hierarchy based on the hierarchy of label related class expressions.
+	 * 
+	 * @param reasoner reasoned ontology
+	 * @return Map of label- list of sub-labels (more specific labels)
+	 */
+	private Map<String, Set<String>> getSublabelMapping(OWLReasoner reasoner) {
+		Map<String, Set<String>> subLabelMapping = new HashMap<>();
+		for (String ces : classExpressionNeoLabelMap.keySet()) {
+			OWLClassExpression ce = parseExpressionWithoutFail(ces);
+			String label = classExpressionNeoLabelMap.get(ces);
+			subLabelMapping.put(label, new HashSet<>());
+			for (String cesCompare : classExpressionNeoLabelMap.keySet()) {
+				String labelCompare = classExpressionNeoLabelMap.get(cesCompare);
+				OWLClassExpression ceCompare = parseExpressionWithoutFail(cesCompare);
+				if (ce != null && ceCompare != null && !label.equals(labelCompare)) {
+					OWLAxiom axiom = df.getOWLSubClassOfAxiom(ceCompare, ce);
+					if (reasoner.isEntailed(axiom)) {
+						System.out.println("ENTAILED: " + labelCompare + "  subclassOf  " + label);
+						subLabelMapping.get(label).add(labelCompare);
+					}
+				}
+			}
+		}
+		return subLabelMapping;
+	}
 
     private void log(Object o) {
         System.out.println(o);
     }
 
-    public static void main(String[] args) throws OWLOntologyCreationException, IOException, OWLOntologyStorageException {
-
-
+	public static void main(String[] args) throws OWLOntologyCreationException, IOException, OWLOntologyStorageException {
         String ontology_path = args[0];
         String config_path = args[1];
         String annotation_iri = args[2];
         String outfile_path = args[3];
-/*
-        //String ontology_path = "/Users/matentzn/data/vfb/dumps/pdb.owl";
-        /*String ontology_path = "/Users/matentzn/pipeline/vfb-pipeline-dumps/test/pdb.owl";
-        String config_path = "/Users/matentzn/pipeline/vfb-prod/neo4j2owl-config.yaml";
-        String annotation_iri = "http://n2o.neo/property/nodeLabel";
-        String outfile_path = "/Users/matentzn/pipeline/vfb-pipeline-dumps/test/annotations.owl";*/
 
-        File ontology_file = new File(ontology_path);
-        File config_file = new File(config_path);
-        File outfile = new File(outfile_path);
+		boolean unique_annotations = false;
+		if (args.length > 4) {
+			unique_annotations = Boolean.parseBoolean(args[4]);
+		}
 
-        new VFBExpressionAnnotator(ontology_file, config_file, annotation_iri, outfile);
-    }
+//		String ontology_path = "/home/huseyin/Downloads/fbbt.owl";
+//		String config_path = "/home/huseyin/workspace/vfb-pipeline-config/config/prod/neo4j2owl-config.yaml";
+//		String annotation_iri = "http://n2o.neo/property/nodeLabel";
+//		String outfile_path = "/home/huseyin/Downloads/annotations2.owl";
+//		unique_annotations = true;
+
+		File ontology_file = new File(ontology_path);
+		File config_file = new File(config_path);
+		File outfile = new File(outfile_path);
+
+		new VFBExpressionAnnotator(ontology_file, config_file, annotation_iri, unique_annotations, outfile);
+	}
 }
