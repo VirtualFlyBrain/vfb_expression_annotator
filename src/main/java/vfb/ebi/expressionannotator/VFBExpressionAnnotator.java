@@ -337,9 +337,17 @@ public class VFBExpressionAnnotator {
 					OWLClassExpression ceCompare = parseExpressionWithoutFail(cesCompare);
 					for (String labelCompare : labelsCompare) {
 						if (ce != null && ceCompare != null && !label.equals(labelCompare)) {
-							OWLAxiom axiom = df.getOWLSubClassOfAxiom(ceCompare, ce);
+							// Skip if the two expressions are equivalent — shared IRIs mean 
+							// they represent the same class, not a hierarchy
+							if (ce.equals(ceCompare)) continue;
+
+							// Check if ceCompare is part_of some ce (i.e., does labelCompare belong inside label?)
+							OWLObjectProperty partOf = df.getOWLObjectProperty(
+							    IRI.create("http://purl.obolibrary.org/obo/BFO_0000050"));
+							OWLClassExpression partOfCe = df.getOWLObjectSomeValuesFrom(partOf, ce);
+							OWLAxiom axiom = df.getOWLSubClassOfAxiom(ceCompare, partOfCe);
 							if (reasoner.isEntailed(axiom)) {
-								log("ENTAILED: " + labelCompare + "  subclassOf  " + label);
+								log("ENTAILED: " + labelCompare + "  part_of some  " + label);
 								subLabelMapping.get(label).add(labelCompare);
 							}
 						}
