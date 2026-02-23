@@ -341,13 +341,9 @@ public class VFBExpressionAnnotator {
 							// they represent the same class, not a hierarchy
 							if (ce.equals(ceCompare)) continue;
 
-							// Check if ceCompare is part_of some ce (i.e., does labelCompare belong inside label?)
-							OWLObjectProperty partOf = df.getOWLObjectProperty(
-							    IRI.create("http://purl.obolibrary.org/obo/BFO_0000050"));
-							OWLClassExpression partOfCe = df.getOWLObjectSomeValuesFrom(partOf, ce);
-							OWLAxiom axiom = df.getOWLSubClassOfAxiom(ceCompare, partOfCe);
+							OWLAxiom axiom = df.getOWLSubClassOfAxiom(ceCompare, ce);
 							if (reasoner.isEntailed(axiom)) {
-								log("ENTAILED: " + labelCompare + "  part_of some  " + label);
+								log("ENTAILED: " + labelCompare + "  subclassOf  " + label);
 								subLabelMapping.get(label).add(labelCompare);
 							}
 						}
